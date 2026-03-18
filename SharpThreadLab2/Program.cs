@@ -1,41 +1,54 @@
-﻿using System.Text;
+﻿using System.Diagnostics;
+using System.Text;
+
 namespace SharpThreadLab2
 {
     public class ArrClass
     {
         private readonly int dim;
-        private readonly int threadNum;
         private readonly int[] arr;
 
-        private int globalMin = int.MaxValue;
-        private int globalMinIndex = -1;
+        private int globalMin;
+        private int globalMinIndex;
+        
         private readonly object lockerForMin = new object();
-
-        private int threadCount = 0;
         private readonly object lockerForCount = new object();
+        
+        private int threadCount;
+        private int currentThreadNum;
 
-        public ArrClass(int dim, int threadNum)
+        public ArrClass(int dim)
         {
             this.dim = dim;
-            this.threadNum = threadNum;
             this.arr = new int[dim];
             InitArr();
         }
 
         private void InitArr()
         {
+            Console.WriteLine($"Генерація масиву з {dim} елементів... (зачекайте)");
             Random rnd = new Random();
+            
             for (int i = 0; i < dim; i++)
             {
-                arr[i] = i;
+                arr[i] = rnd.Next(1, 101); 
             }
 
             int randomIndex = rnd.Next(0, dim);
-            arr[randomIndex] = -99999;
+            int randomNegative = -(rnd.Next(1, 1001)); 
+            arr[randomIndex] = randomNegative;
 
-            Console.WriteLine($"[Генерація] Від'ємне число (-99999) розміщено під індексом: {randomIndex}");
+            Console.WriteLine($"[ЗГЕНЕРОВАНО] Мінусовий елемент: {randomNegative}, з індексом: {randomIndex}\n");
         }
-        
+
+        public void ResetForNewSearch(int threadNum)
+        {
+            this.globalMin = int.MaxValue;
+            this.globalMinIndex = -1;
+            this.threadCount = 0;
+            this.currentThreadNum = threadNum;
+        }
+
         public (int min, int index) FindPartMin(int startIndex, int finishIndex)
         {
             int localMin = int.MaxValue;
@@ -49,17 +62,15 @@ namespace SharpThreadLab2
                     localMinIndex = i;
                 }
             }
-
             return (localMin, localMinIndex);
         }
-        
+
         public void CollectMin(int localMin, int localMinIndex)
         {
             bool acquired = false;
             try
             {
                 Monitor.Enter(lockerForMin, ref acquired);
-                
                 if (localMin < globalMin)
                 {
                     globalMin = localMin;
@@ -68,13 +79,10 @@ namespace SharpThreadLab2
             }
             finally
             {
-                if (acquired)
-                {
-                    Monitor.Exit(lockerForMin);
-                }
+                if (acquired) Monitor.Exit(lockerForMin);
             }
         }
-        
+
         public void IncThreadCount()
         {
             bool acquired = false;
@@ -86,40 +94,34 @@ namespace SharpThreadLab2
             }
             finally
             {
-                if (acquired)
-                {
-                    Monitor.Exit(lockerForCount);
-                }
+                if (acquired) Monitor.Exit(lockerForCount);
             }
         }
-        
+
         private void WaitAllThreads()
         {
             bool acquired = false;
             try
             {
                 Monitor.Enter(lockerForCount, ref acquired);
-                while (threadCount < threadNum)
+                while (threadCount < currentThreadNum)
                 {
                     Monitor.Wait(lockerForCount);
                 }
             }
             finally
             {
-                if (acquired)
-                {
-                    Monitor.Exit(lockerForCount);
-                }
+                if (acquired) Monitor.Exit(lockerForCount);
             }
         }
 
         public void ParallelMin()
         {
-            int chunkSize = dim / threadNum;
-            int remainder = dim % threadNum;
+            int chunkSize = dim / currentThreadNum;
+            int remainder = dim % currentThreadNum;
             int currentStart = 0;
 
-            for (int i = 0; i < threadNum; i++)
+            for (int i = 0; i < currentThreadNum; i++)
             {
                 int currentFinish = currentStart + chunkSize + (i < remainder ? 1 : 0);
 
@@ -131,12 +133,12 @@ namespace SharpThreadLab2
             }
 
             WaitAllThreads();
-
-            Console.WriteLine($"\n[Результат] Мінімальний елемент: {globalMin}");
-            Console.WriteLine($"[Результат] Індекс: {globalMinIndex}");
         }
+
+        public int GetGlobalMin() => globalMin;
+        public int GetGlobalMinIndex() => globalMinIndex;
     }
-    
+
     public class ThreadMin
     {
         private readonly int startIndex;
@@ -153,23 +155,33 @@ namespace SharpThreadLab2
         public void Run()
         {
             var result = arrClass.FindPartMin(startIndex, finishIndex);
-            
             arrClass.CollectMin(result.min, result.index);
-            
             arrClass.IncThreadCount();
         }
     }
-    
+
     class Program
     {
         static void Main(string[] args)
         {
-            Console.OutputEncoding = Encoding.UTF8;
-            int dim = 10000000;
-            int threadNum = 2;
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            int dim = 1000000000; 
+            
+            ArrClass arrClass = new ArrClass(dim);
+            int[] threadConfigs = { 1, 2, 4, 6, 8 };
 
-            ArrClass arrClass = new ArrClass(dim, threadNum);
-            arrClass.ParallelMin();
+            Console.WriteLine("--- ПОЧАТОК ПОШУКУ (C#) ---");
+
+            foreach (int threads in threadConfigs)
+            {
+                arrClass.ResetForNewSearch(threads);
+
+                Stopwatch sw = Stopwatch.StartNew();
+                arrClass.ParallelMin();
+                sw.Stop();
+
+                Console.WriteLine($"Потоків: {threads} | Час: {sw.ElapsedMilliseconds,4} мс | Знайдено мін: {arrClass.GetGlobalMin()} (індекс: {arrClass.GetGlobalMinIndex()})");
+            }
 
             Console.ReadKey();
         }
