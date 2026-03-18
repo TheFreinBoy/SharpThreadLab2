@@ -1,36 +1,30 @@
-﻿
+﻿using System.Text;
 namespace SharpThreadLab2
 {
-    class Program
+    public class ArrClass
     {
-        private static readonly int dim = 10000000;
-        private static readonly int threadNum = 2; 
+        private readonly int dim;
+        private readonly int threadNum;
+        private readonly int[] arr;
 
-        private readonly Thread[] threads = new Thread[threadNum];
-        private readonly int[] arr = new int[dim];
-        
         private int globalMin = int.MaxValue;
         private int globalMinIndex = -1;
         private readonly object lockerForMin = new object();
-        
+
         private int threadCount = 0;
         private readonly object lockerForCount = new object();
 
-        static void Main(string[] args)
+        public ArrClass(int dim, int threadNum)
         {
-            Program main = new Program();
-            
-            main.InitArr();
-            
-            main.ParallelMin();
-
-            Console.ReadKey();
+            this.dim = dim;
+            this.threadNum = threadNum;
+            this.arr = new int[dim];
+            InitArr();
         }
 
         private void InitArr()
         {
             Random rnd = new Random();
-            
             for (int i = 0; i < dim; i++)
             {
                 arr[i] = i;
@@ -38,86 +32,146 @@ namespace SharpThreadLab2
 
             int randomIndex = rnd.Next(0, dim);
             arr[randomIndex] = -99999;
-            
-            Console.WriteLine($"[Генерація] Від'ємне число (-99999) розміщено під індексом: {randomIndex}\n");
+
+            Console.WriteLine($"[Генерація] Від'ємне число (-99999) розміщено під індексом: {randomIndex}");
         }
-
-        class Bound
+        
+        public (int min, int index) FindPartMin(int startIndex, int finishIndex)
         {
-            public int StartIndex { get; set; }
-            public int FinishIndex { get; set; }
+            int localMin = int.MaxValue;
+            int localMinIndex = -1;
 
-            public Bound(int startIndex, int finishIndex)
+            for (int i = startIndex; i < finishIndex; i++)
             {
-                StartIndex = startIndex;
-                FinishIndex = finishIndex;
+                if (arr[i] < localMin)
+                {
+                    localMin = arr[i];
+                    localMinIndex = i;
+                }
+            }
+
+            return (localMin, localMinIndex);
+        }
+        
+        public void CollectMin(int localMin, int localMinIndex)
+        {
+            bool acquired = false;
+            try
+            {
+                Monitor.Enter(lockerForMin, ref acquired);
+                
+                if (localMin < globalMin)
+                {
+                    globalMin = localMin;
+                    globalMinIndex = localMinIndex;
+                }
+            }
+            finally
+            {
+                if (acquired)
+                {
+                    Monitor.Exit(lockerForMin);
+                }
+            }
+        }
+        
+        public void IncThreadCount()
+        {
+            bool acquired = false;
+            try
+            {
+                Monitor.Enter(lockerForCount, ref acquired);
+                threadCount++;
+                Monitor.Pulse(lockerForCount);
+            }
+            finally
+            {
+                if (acquired)
+                {
+                    Monitor.Exit(lockerForCount);
+                }
+            }
+        }
+        
+        private void WaitAllThreads()
+        {
+            bool acquired = false;
+            try
+            {
+                Monitor.Enter(lockerForCount, ref acquired);
+                while (threadCount < threadNum)
+                {
+                    Monitor.Wait(lockerForCount);
+                }
+            }
+            finally
+            {
+                if (acquired)
+                {
+                    Monitor.Exit(lockerForCount);
+                }
             }
         }
 
-        private void ParallelMin()
+        public void ParallelMin()
         {
             int chunkSize = dim / threadNum;
             int remainder = dim % threadNum;
-
             int currentStart = 0;
 
             for (int i = 0; i < threadNum; i++)
             {
                 int currentFinish = currentStart + chunkSize + (i < remainder ? 1 : 0);
 
-                threads[i] = new Thread(StarterThread);
-                threads[i].Start(new Bound(currentStart, currentFinish));
+                ThreadMin worker = new ThreadMin(currentStart, currentFinish, this);
+                Thread t = new Thread(worker.Run);
+                t.Start();
 
-                currentStart = currentFinish; 
+                currentStart = currentFinish;
             }
-            
-            lock (lockerForCount)
-            {
-                while (threadCount < threadNum)
-                {
-                    Monitor.Wait(lockerForCount);
-                }
-            }
-            
-            Console.WriteLine($"[Результат] Мінімальний елемент: {globalMin}, Індекс: {globalMinIndex}");
+
+            WaitAllThreads();
+
+            Console.WriteLine($"\n[Результат] Мінімальний елемент: {globalMin}");
+            Console.WriteLine($"[Результат] Індекс: {globalMinIndex}");
+        }
+    }
+    
+    public class ThreadMin
+    {
+        private readonly int startIndex;
+        private readonly int finishIndex;
+        private readonly ArrClass arrClass;
+
+        public ThreadMin(int startIndex, int finishIndex, ArrClass arrClass)
+        {
+            this.startIndex = startIndex;
+            this.finishIndex = finishIndex;
+            this.arrClass = arrClass;
         }
 
-        private void StarterThread(object param)
+        public void Run()
         {
-            if (param is Bound bound)
-            {
-                int localMin = int.MaxValue;
-                int localMinIndex = -1;
-                
-                for (int i = bound.StartIndex; i < bound.FinishIndex; i++)
-                {
-                    if (arr[i] < localMin)
-                    {
-                        localMin = arr[i];
-                        localMinIndex = i;
-                    }
-                }
-                
-                lock (lockerForMin)
-                {
-                    if (localMin < globalMin)
-                    {
-                        globalMin = localMin;
-                        globalMinIndex = localMinIndex;
-                    }
-                }
-
-                IncThreadCount();
-            }
+            var result = arrClass.FindPartMin(startIndex, finishIndex);
+            
+            arrClass.CollectMin(result.min, result.index);
+            
+            arrClass.IncThreadCount();
         }
-
-        private void IncThreadCount()
+    }
+    
+    class Program
+    {
+        static void Main(string[] args)
         {
-            lock (lockerForCount)
-            {
-                threadCount++;
-                Monitor.Pulse(lockerForCount); 
-            }
+            Console.OutputEncoding = Encoding.UTF8;
+            int dim = 10000000;
+            int threadNum = 2;
+
+            ArrClass arrClass = new ArrClass(dim, threadNum);
+            arrClass.ParallelMin();
+
+            Console.ReadKey();
         }
     }
 }
